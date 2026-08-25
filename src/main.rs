@@ -58,14 +58,15 @@ enum Message {
     OpenSetTagMsg(MusicFile),
     AddTagTo(String, MusicFile),
     CloseSetTag,
-    NewTagType(String),
+    WhenNewTagType(String),
     OpenNewTagMsg,
     CloseNewTagMsg,
     AddTag,
     NextMusic,
     PrevMusic,
     RemoveMusicFromTag(MusicFile),
-    RemoveTag(String)
+    RemoveTag(String),
+    WhenSearchTextType(String)
 }
 #[derive(PartialEq)]
 enum PlayState {
@@ -78,6 +79,8 @@ enum View {
     MainView,
     Tags,
     TagView(String),
+    SearchView,
+    // Settings
 }
 
 #[derive(Clone)]
@@ -156,10 +159,12 @@ impl CommonWidget {
             .height(iced::Fill)
             .into()
     }
-    fn title_bar(view_name: String, action_buttons: iced::Element<Message>) -> iced::Element<Message> {
-
+    fn title_bar(view_name: String, action_buttons: iced::Element<Message>, back_view: Option<Message>) -> iced::Element<Message> {
         widget::row![
-                widget::button("=").on_press(Message::SwitchSideBarShow),
+                widget::button(
+                back_view.is_some().then(|| "<")
+                .unwrap_or_else(|| "=")
+            ).on_press(back_view.is_some().then(|| back_view.unwrap()).unwrap_or_else(|| Message::SwitchSideBarShow)),
                 widget::text(view_name)
                     .size(28)
                     .style(widget::text::primary),
@@ -194,6 +199,7 @@ struct RIMusic {
     play_list: PlayList,
     new_tag: String,
     show_new_tag_modal: bool,
+    search_text: String
 }
 
 impl Default for RIMusic {
@@ -227,6 +233,7 @@ impl Default for RIMusic {
             play_list: PlayList::AllMusic,
             new_tag: String::new(),
             show_new_tag_modal: false,
+            search_text: String::new()
         }
     }
 }
@@ -263,6 +270,10 @@ impl RIMusic {
                     widget::space().height(48),
                     CommonWidget::side_bar_button(&self, String::from("曲库"), View::MainView),
                     CommonWidget::side_bar_button(&self, String::from("标签"), View::Tags),
+                    CommonWidget::side_bar_button(&self, String::from("搜索"), View::SearchView),
+                    // widget::container(
+                    //     CommonWidget::side_bar_button(&self, String::from("设置"), View::SearchView)
+                    // ).height(iced::Fill).align_y(iced::alignment::Vertical::Bottom)
                 ]
                     .spacing(8)
                     .align_x(iced::alignment::Horizontal::Center),
@@ -353,7 +364,7 @@ impl RIMusic {
                 widget::text("新建标签🏷")
                     .size(48)
                     .style(widget::text::primary),
-                widget::text_input("请输入标签名称", &self.new_tag).on_input(Message::NewTagType),
+                widget::text_input("请输入标签名称", &self.new_tag).on_input(Message::WhenNewTagType),
                 widget::container(
                     widget::row![
                         widget::button("添加").on_press_maybe(self.check_tag_add()),
@@ -431,9 +442,10 @@ impl RIMusic {
         for f in self.music_files.iter() {
             cards.push(self.music_card(f.clone()))
         }
+        let act = cards.is_empty();
         CommonWidget::view_builder(widget::column![
-            CommonWidget::title_bar("MainView".to_string(), widget::space().into()),
-            widget::scrollable(widget::column(cards).spacing(12)).spacing(8)
+            CommonWidget::title_bar("MainView".to_string(), widget::space().into(), None),
+            Self::show_or_text(widget::column(cards).spacing(12).into(), "空空如也,像冬天的落叶一样", act),
         ].spacing(12))
     }
     fn tags_view(&self) -> iced::Element<'_, Message> {
@@ -441,18 +453,26 @@ impl RIMusic {
         for k in self.tags.keys() {
             tagcs.push(self.tags_card(k.to_string()))
         }
+        let act = tagcs.is_empty();
         CommonWidget::view_builder(widget::column![
-            CommonWidget::title_bar("TagsView".to_string(), widget::button("+").on_press(Message::OpenNewTagMsg).into()),
-            widget::scrollable(widget::grid(tagcs).fluid(200).spacing(8)).spacing(8)
+            CommonWidget::title_bar("TagsView".to_string(), widget::button("+").on_press(Message::OpenNewTagMsg).into(), None),
+            Self::show_or_text(widget::grid(tagcs).fluid(200).spacing(8).into(), "什么都没有,来创建一个新的标签吧!", act),
         ].spacing(12)
         )
     }
     fn search_view(&self) -> iced::Element<'_, Message> {
+        let mut show = vec![];
+        for i in self.search_music_file(&self.search_text) {
+            show.push(self.music_card(i))
+        }
+        let act = self.search_text.is_empty();
         CommonWidget::view_builder(widget::column![
-                widget::row![
-
-                ]
-            ]
+            CommonWidget::title_bar("SearchView".to_string(), widget::space().into(), None),
+            widget::text_input("搜你所爱", &self.search_text)
+                .on_input(Message::WhenSearchTextType)
+                .width(iced::Fill),
+            Self::show_or_text(widget::column(show).spacing(12).into(), "搜索从这里开始!", act),
+            ].spacing(12)
         )
     }
     fn tag_view(&self, tag: String) -> iced::Element<'_, Message> {
@@ -460,9 +480,10 @@ impl RIMusic {
         for f in self.tags.get(&tag).unwrap() {
             cards.push(self.music_card(f.clone()))
         }
+        let act = cards.is_empty();
         CommonWidget::view_builder(widget::column![
-            CommonWidget::title_bar(tag.clone(), widget::button("🗑").style(widget::button::danger).on_press(Message::RemoveTag(tag)).into()),
-            widget::scrollable(widget::column(cards).spacing(8)).spacing(8)
+            CommonWidget::title_bar(tag.clone(), widget::button("🗑").style(widget::button::danger).on_press(Message::RemoveTag(tag)).into(), Some(Message::GoView(View::Tags))),
+            Self::show_or_text(widget::column(cards).spacing(12).into(), "嗯...加点什么好呢?", act),
         ].spacing(12)
         )
     }
@@ -538,6 +559,7 @@ impl RIMusic {
                 View::MainView => self.main_view(),
                 View::Tags => self.tags_view(),
                 View::TagView(t) => self.tag_view(t.clone()),
+                View::SearchView => self.search_view()
             },
             self.play_bar()
         ]
@@ -546,6 +568,19 @@ impl RIMusic {
     }
     fn show_or_space(view: iced::Element<Message>, act: bool) -> iced::Element<Message> {
         act.then(|| view).unwrap_or_else(|| widget::space().into())
+    }
+    fn show_or_text<'a>(list: iced::Element<'a, Message>, text: &'a str, act: bool) -> iced::Element<'a, Message> {
+        act.then(||
+                widget::container(
+                    widget::center(
+                        widget::text(text).size(48)
+                    )
+                )
+            ).unwrap_or_else(||
+            widget::container(
+                widget::scrollable(list).spacing(8)
+            )
+        ).into()
     }
     fn view(&self) -> iced::Element<'_, Message> {
         widget::stack([
@@ -561,6 +596,13 @@ impl RIMusic {
 
 // 工具方法
 impl RIMusic {
+    fn search_music_file(&self, text: &String) -> Vec<MusicFile> {
+        let ret: Vec<_> = self.music_files.iter()
+            .filter(|x| x.music.to_string_lossy().to_lowercase().contains(&text.to_lowercase()))
+            .map(|x| x.clone())
+            .collect();
+        ret
+    }
     fn get_music_file() -> Vec<PathBuf> {
         let mut files = vec![];
         if let Some(v) = dirs::audio_dir() {
@@ -692,6 +734,7 @@ impl RIMusic {
                     View::TagView(t) => self.play_list = PlayList::Tags(t.clone()),
                     View::MainView => self.play_list = PlayList::AllMusic,
                     View::Tags => (),
+                    View::SearchView => self.play_list = PlayList::AllMusic
                 }
                 self.play_music(&mut p);
             }
@@ -764,7 +807,7 @@ impl RIMusic {
                 self.show_set_tag_modal = false;
             }
             Message::CloseSetTag => self.show_set_tag_modal = false,
-            Message::NewTagType(t) => self.new_tag = t,
+            Message::WhenNewTagType(t) => self.new_tag = t,
             Message::OpenNewTagMsg => self.show_new_tag_modal = true,
             Message::CloseNewTagMsg => {
                 self.show_new_tag_modal = false;
@@ -797,6 +840,9 @@ impl RIMusic {
                         self.player_default()
                     }
                 }
+            }
+            Message::WhenSearchTextType(s) => {
+                self.search_text = s
             }
         }
     }
