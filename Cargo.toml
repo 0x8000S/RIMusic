@@ -10,4 +10,7 @@ iced_aw = "0.14.1"
 lofty = "0.25.1"
 rand = "0.10.2"
 rodio = { version = "0.22.2" , default-features = false, features = ["symphonia-all", "playback"]}
+rfd = "0.11.4"
+confy = "2.0.0"
+serde = { version = "1.0.229", features = ["derive"] }
 

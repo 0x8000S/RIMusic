@@ -1,32 +1,33 @@
 use iced::{widget, Color};
 use iced_aw::Menu;
 use lofty::prelude::*;
-use rodio::Source;
+use rodio::{Float, Source};
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use iced::theme::{Custom, Palette};
+use serde::{Deserialize, Serialize};
 
-fn metro() -> Palette {
+fn cap() -> Palette {
     Palette {
-        background: Color::from_rgb8(30, 30, 46),      // 深蓝灰背景
+        background: Color::from_rgb8(30, 30, 46),       // 深蓝灰背景
         text: Color::from_rgb8(205, 214, 244),          // 浅灰文字
         primary: Color::from_rgb8(137, 180, 250),       // 强调色（蓝）
         success: Color::from_rgb8(166, 227, 161),       // 成功绿
         danger: Color::from_rgb8(243, 139, 168),        // 危险红
-        warning: Color::from_rgb8(216, 118, 0)
+        warning: Color::from_rgb8(216, 118, 0)          // 警告橙
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 enum PlayList {
     AllMusic,
     Tags(String),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize, Copy)]
 enum PlaybackType {
     OnceStop,
     OneWhile,
@@ -66,7 +67,12 @@ enum Message {
     PrevMusic,
     RemoveMusicFromTag(MusicFile),
     RemoveTag(String),
-    WhenSearchTextType(String)
+    WhenSearchTextType(String),
+    WhenExpSearchOriginClicked,
+    WhenSettingChanged(SettingKeys),
+    DeleteOriginPath(PathBuf),
+    OnAddSearchOriginClicked,
+    CloseSave
 }
 #[derive(PartialEq)]
 enum PlayState {
@@ -80,10 +86,10 @@ enum View {
     Tags,
     TagView(String),
     SearchView,
-    // Settings
+    Settings
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct MusicFile {
     music: PathBuf,
     duration: Option<Duration>
@@ -124,6 +130,7 @@ impl MusicFile {
 
 }
 
+
 struct CommonWidget {}
 impl CommonWidget {
     fn side_bar_button(env: &RIMusic, name: String, view: View) -> iced::Element<'_, Message> {
@@ -159,12 +166,20 @@ impl CommonWidget {
             .height(iced::Fill)
             .into()
     }
-    fn title_bar(view_name: String, action_buttons: iced::Element<Message>, back_view: Option<Message>) -> iced::Element<Message> {
+    fn title_bar<'a>(view_name: String, action_buttons: Option<iced::Element<'a, Message>>, back_view: Option<Message>, settings: &'a Settings) -> iced::Element<'a, Message> {
         widget::row![
-                widget::button(
-                back_view.is_some().then(|| "<")
-                .unwrap_or_else(|| "=")
-            ).on_press(back_view.is_some().then(|| back_view.unwrap()).unwrap_or_else(|| Message::SwitchSideBarShow)),
+                if settings.show_side_bar {
+                    widget::container(widget::space())
+                } else {
+                    widget::container(
+                        widget::button(
+                            back_view.is_some().then(|| "<")
+                            .unwrap_or_else(|| "≡")
+                            ).on_press(back_view.is_some()
+                                .then(|| back_view.unwrap())
+                                .unwrap_or_else(|| Message::SwitchSideBarShow)),
+                    )
+                },
                 widget::text(view_name)
                     .size(28)
                     .style(widget::text::primary),
@@ -177,63 +192,392 @@ impl CommonWidget {
             .spacing(8)
             .into()
     }
+    fn setting_group(name: String, content: iced::Element<'_, Message>) -> iced::Element<'_, Message> {
+        widget::column![
+            widget::text(name).size(48),
+            widget::space().height(18),
+            content
+        ].into()
+    }
+    fn panel(content: iced::Element<'_, Message>) -> iced::Element<'_, Message> {
+        widget::container(content).padding(18)
+            .style(|x| widget::container::Style {
+                background: Some(iced::Background::Color(x.palette().background)),
+                border: iced::Border {
+                    color: x.palette().text,
+                    width: 2.0,
+                    radius: iced::border::Radius::new(4)
+                },
+                ..widget::container::Style::default()
+            })
+            .into()
+    }
+    fn setting_card(name: String, content: iced::Element<Message>) -> iced::Element<Message> {
+        Self::panel(
+            widget::row![
+                widget::text(name),
+                widget::container(
+                    content
+                ).width(iced::Fill).align_x(iced::alignment::Horizontal::Right)
+            ].into()
+        )
+    }
+    fn expand_content<'a>(title: String, content: iced::Element<'a, Message>, show: &bool, e: Message) -> iced::Element<'a, Message> {
+        if *show {
+            Self::panel(
+                widget::column![
+                    widget::stack![
+                        widget::row![
+                            widget::text(title).size(32),
+                            widget::container(
+                                widget::text("👆")
+                            ).width(iced::Fill).align_x(iced::alignment::Horizontal::Right)
+                        ],
+                        widget::button("")
+                            .style(widget::button::text)
+                            .width(iced::Fill).height(iced::Fill)
+                            .on_press(e)
+                    ],
+                    widget::space().height(24),
+                    content
+                ].into()
+            ).into()
+        } else {
+            Self::panel(
+                widget::stack![
+                    widget::row![
+                        widget::text(title).size(32),
+                        widget::container(
+                            widget::text("👇")
+                        ).width(iced::Fill).align_x(iced::alignment::Horizontal::Right)
+                    ],
+                    widget::button("")
+                    .style(widget::button::text)
+                    .width(iced::Fill).height(iced::Fill)
+                    .on_press(e)
+                ].into()
+            ).into()
+        }
+    }
+    fn path_show(p: &PathBuf) -> iced::Element<'_, Message> {
+        widget::container(
+            widget::row![
+                widget::text(p.to_string_lossy()).size(18),
+                widget::container(
+                    widget::button("删除").on_press(Message::DeleteOriginPath(p.clone()))
+                ).width(iced::Fill).align_x(iced::alignment::Horizontal::Right)
+            ]
+        ).width(iced::Fill).into()
+    }
+}
+
+struct MusicStore {
+    search_origin: Vec<PathBuf>,
+    music_files: Vec<MusicFile>,
+    tags: HashMap<String, Vec<MusicFile>>,
+}
+
+impl MusicStore {
+    fn new() -> Self {
+        MusicStore {
+            search_origin: vec![],
+            music_files: vec![],
+            tags: HashMap::new()
+        }
+    }
+    fn get_music_file() -> PathBuf {
+        if let Some(v) = dirs::audio_dir() {
+            v
+        } else {
+            PathBuf::new()
+        }
+    }
+    fn sync(&mut self) {
+        self.music_files.clear();
+        self.sync_only_push();
+    }
+    fn sync_only_push(&mut self) {
+        for p in self.search_origin.iter() {
+            for f in Self::get_music_file_from_path(p) {
+                let mut mf = MusicFile {
+                    music: f,
+                    duration: None
+                };
+                self.music_files.push(mf);
+            }
+        }
+    }
+    fn get_music_file_from_path(p: &PathBuf) -> Vec<PathBuf> {
+        let mut files = vec![];
+        if let Ok(val) = std::fs::read_dir(p) {
+            for f in val {
+                let f = f.unwrap();
+                let path = f.path();
+                if path.is_file() {
+                    if let Some(val) = path.extension() {
+                        if val == "mp3" || val == "wav" || val == "ogg" {
+                            files.push(path)
+                        }
+                    }
+                }
+            }
+
+        }
+        files
+    }
+    fn remove_tag(&mut self, player: &mut Player, tag: String) {
+        self.tags.remove(&tag);
+        if let PlayList::Tags(tx) = &player.play_list {
+            if *tx == tag {
+                player.player_default()
+            }
+        }
+    }
+    fn remove_music_from_tag(&mut self, player: &mut Player, tag: &String, music_file: MusicFile)  {
+        let idx = self.tags.get(tag).unwrap()
+            .iter().position(|x| *x == music_file).unwrap();
+        self.tags.get_mut(tag).unwrap().remove(idx);
+        if let Some(x) = &player.now_playing {
+            if *x == music_file {
+                player.player_default()
+            }
+        }
+    }
+    fn find_music(&self, player: &Player) -> usize {
+        match &player.play_list {
+            PlayList::AllMusic => {
+                self.music_files
+                    .iter()
+                    .position(|x| {
+                        x.clone() == player.now_playing.clone().unwrap()
+                    })
+                    .unwrap()
+            }
+            PlayList::Tags(t) => {
+                let music_files = &self.tags[t];
+                music_files
+                    .iter()
+                    .position(|x| {
+                        x.clone() == player.now_playing.clone().unwrap()
+                    })
+                    .unwrap()
+            }
+        }
+    }
+    fn remove_search_origin(&mut self, p: PathBuf) {
+        let idx = self.search_origin.iter()
+            .position(|x| *x == p);
+        if let Some(val) = idx {
+            self.search_origin.remove(val);
+        }
+    }
+}
+
+struct Player {
+    _music_handle: rodio::MixerDeviceSink,
+    music_player: rodio::Player,
+    music_name: String,
+    now_playing: Option<MusicFile>,
+    total_music_time: Duration,
+    play_state: PlayState,
+    playback_type: PlaybackType,
+    play_list: PlayList,
+    value: f64,
+}
+
+impl Player {
+    fn new() -> Self {
+        let handle = rodio::DeviceSinkBuilder::open_default_sink().unwrap();
+        let player = rodio::Player::connect_new(&handle.mixer());
+
+        Player {
+            _music_handle: handle,
+            music_player: player,
+            total_music_time: Duration::from_secs(0),
+            play_state: PlayState::Stop,
+            music_name: String::from("TEST MUSIC TITLE"),
+            now_playing: None,
+            playback_type: PlaybackType::OnceStop,
+            play_list: PlayList::AllMusic,
+            value: 0f64,
+        }
+    }
+    fn play_music(&mut self, p: &mut MusicFile, store: &mut MusicStore) -> Result<(), ()> {
+        let file = std::fs::File::open(&p.music).unwrap();
+        self.now_playing = Some(p.clone());
+        if let Ok(source) = rodio::Decoder::try_from(file) {
+            self.play_state = PlayState::Play;
+            self.total_music_time = p.get_music_file_total_duration();
+            match &self.play_list {
+                PlayList::AllMusic => {
+                    let idx = store.find_music(self);
+                    p.get_music_file_total_duration();
+                    store.music_files[idx] = p.clone();
+                }
+                PlayList::Tags(t) => {
+                    let idx = store.find_music(self);
+                    p.get_music_file_total_duration();
+                    store.tags.get_mut(t).unwrap()[idx] = p.clone();
+                }
+            }
+            self.music_player.clear();
+            self.value = self.music_player.get_pos().as_millis() as f64;
+            self.music_player.append(source);
+            self.music_player.play();
+        } else {
+            return Err(())
+        }
+        let name = p.music.file_name().unwrap().to_str().unwrap().to_string();
+        let chars: Vec<_> = name.chars().collect();
+        if chars.iter().len() > 20 {
+            let pre20 = String::from_iter(chars.get(..20).unwrap().to_owned().iter());
+            self.music_name = format!("{}...", pre20);
+        } else {
+            self.music_name = name;
+        }
+        Ok(())
+    }
+    fn music_play_push(&mut self, pidx: i64, store: &mut MusicStore) -> Result<(), ()> {
+        match &self.play_list {
+            PlayList::AllMusic => {
+                let mut idx = store.find_music(self);
+                let ret = idx  as i64 + pidx;
+                if ret == store.music_files.len() as i64 {
+                    idx = 0;
+                } else if ret < 0 {
+                    idx = store.music_files.len() - 1;
+                } else {
+                    idx = ret as usize;
+                }
+                self.play_music(&mut store.music_files[idx].clone(), store)
+            }
+            PlayList::Tags(t) => {
+                let music_files = &store.tags[t];
+                let mut idx = store.find_music(self);
+                let ret = idx  as i64 + pidx;
+                if ret == music_files.len() as i64 {
+                    idx = 0;
+                } else if ret < 0 {
+                    idx = music_files.len() - 1;
+                } else {
+                    idx = ret as usize;
+                }
+                self.play_music(&mut music_files[idx].clone(), store)
+            }
+        }
+    }
+    fn player_default(&mut self) {
+        self.now_playing = None;
+        self.music_player.stop();
+        self.play_state = PlayState::Stop;
+        self.value = 0.0;
+        self.music_player.try_seek(Duration::from_secs(0)).unwrap();
+        self.music_name = String::from("TEST MUSIC TITLE");
+    }
+    fn set_volume(&mut self, vol: Float) {
+        self.music_player.set_volume(vol)
+    }
+    fn set_pos(&mut self, pos: Duration) {
+        let _ = self.music_player.try_seek(pos);
+        self.value = pos.as_millis() as f64
+    }
+
+}
+
+#[derive(Clone)]
+enum SettingKeys {
+    ShowSideBar(bool),
+    Volume(Float),
+    KeepPlayState(bool)
+}
+#[derive(Serialize, Deserialize)]
+struct Settings {
+    show_side_bar: bool,
+    volume: Float,
+    search_origin: Vec<PathBuf>,
+    tags: HashMap<String, Vec<MusicFile>>,
+    last_music: Option<MusicFile>,
+    last_position: Duration,
+    last_playback: PlaybackType,
+    last_playlist: PlayList,
+    keep_state: bool
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            show_side_bar: false,
+            volume: 1 as Float,
+            search_origin: vec![MusicStore::get_music_file()],
+            tags: HashMap::new(),
+            last_music: None,
+            last_position: Duration::from_secs(0),
+            last_playback: PlaybackType::OnceStop,
+            last_playlist: PlayList::AllMusic,
+            keep_state: false
+        }
+    }
+}
+
+impl Settings {
+    fn set_setting(&mut self, key: SettingKeys) {
+        match key {
+            SettingKeys::ShowSideBar(b) => self.show_side_bar = b,
+            SettingKeys::Volume(v) => self.volume = v,
+            SettingKeys::KeepPlayState(b) => self.keep_state = b
+        }
+    }
+    fn save(&self, store: &MusicStore, player: &Player) -> Self {
+        Settings {
+            search_origin: store.search_origin.clone(),
+            tags: store.tags.clone(),
+            last_music: player.now_playing.clone(),
+            last_position: player.music_player.get_pos(),
+            last_playback: player.playback_type.clone(),
+            last_playlist: player.play_list.clone(),
+            ..*self
+        }
+    }
 }
 
 struct RIMusic {
-    value: f64,
-    music_files: Vec<MusicFile>,
-    _music_handle: rodio::MixerDeviceSink,
-    music_player: rodio::Player,
-    total_dur: Duration,
-    play_state: PlayState,
-    music_name: String,
+    operate_files: Option<MusicFile>,
+    player: Player,
     force_stop: bool,
-    now_playing: Option<MusicFile>,
-    playback_type: PlaybackType,
     show_music_open_failure: bool,
     side_bar_show: bool,
     view: View,
-    tags: HashMap<String, Vec<MusicFile>>,
     show_set_tag_modal: bool,
-    operate_files: Option<MusicFile>,
-    play_list: PlayList,
     new_tag: String,
     show_new_tag_modal: bool,
-    search_text: String
+    search_text: String,
+    show_exp_search_origin: bool,
+    store: MusicStore,
+    settings: Settings,
+    exit: bool
 }
 
 impl Default for RIMusic {
     fn default() -> Self {
-        let handle = rodio::DeviceSinkBuilder::open_default_sink().unwrap();
-        let player = rodio::Player::connect_new(&handle.mixer());
-        let mut t = vec![];
-        for i in RIMusic::get_music_file() {
-            t.push(MusicFile {
-                music: i,
-                duration: None
-            });
-        }
+        let settings = confy::load("RIMusic", None).unwrap_or_else(|_|Settings::default());
+        let mut store = MusicStore::new();
+        let mut player = Player::new();
+        Self::init(&mut player, &mut store, &settings);
         RIMusic {
-            value: 0f64,
-            music_files: t,
-            _music_handle: handle,
-            music_player: player,
-            total_dur: Duration::from_secs(0),
-            play_state: PlayState::Stop,
-            music_name: String::from("TEST MUSIC TITLE"),
+            store,
+            operate_files: None,
+            player,
             force_stop: false,
-            now_playing: None,
-            playback_type: PlaybackType::OnceStop,
             show_music_open_failure: false,
             side_bar_show: false,
             view: View::MainView,
-            tags: HashMap::new(),
             show_set_tag_modal: false,
-            operate_files: None,
-            play_list: PlayList::AllMusic,
             new_tag: String::new(),
             show_new_tag_modal: false,
-            search_text: String::new()
+            search_text: String::new(),
+            show_exp_search_origin: false,
+            settings,
+            exit: false
         }
     }
 }
@@ -248,7 +592,7 @@ impl RIMusic {
                     .width(iced::Fill)
                     .height(iced::Fill)
                     .wrapping(widget::text::Wrapping::WordOrGlyph),
-                widget::text(self.tags.get(&tags).unwrap().len())
+                widget::text(self.store.tags.get(&tags).unwrap().len())
                     .width(iced::Fill)
                     .align_x(iced::alignment::Horizontal::Right)
                     .size(48)
@@ -271,9 +615,9 @@ impl RIMusic {
                     CommonWidget::side_bar_button(&self, String::from("曲库"), View::MainView),
                     CommonWidget::side_bar_button(&self, String::from("标签"), View::Tags),
                     CommonWidget::side_bar_button(&self, String::from("搜索"), View::SearchView),
-                    // widget::container(
-                    //     CommonWidget::side_bar_button(&self, String::from("设置"), View::SearchView)
-                    // ).height(iced::Fill).align_y(iced::alignment::Vertical::Bottom)
+                    widget::container(
+                        CommonWidget::side_bar_button(&self, String::from("设置"), View::Settings)
+                    ).height(iced::Fill).align_y(iced::alignment::Vertical::Bottom)
                 ]
                     .spacing(8)
                     .align_x(iced::alignment::Horizontal::Center),
@@ -283,24 +627,27 @@ impl RIMusic {
                 .width(iced::Shrink)
                 .height(iced::Fill)
                 .into(),
-            widget::button("")
-                .style(|_, _| widget::button::Style {
-                    background: Some(iced::Background::Color(Color::from_rgba8(
-                        0, 0, 0, 0.4,
-                    ))),
-                    ..widget::button::Style::default()
-                })
-                .width(iced::Fill)
-                .height(iced::Fill)
-                .on_press(Message::SwitchSideBarShow)
-                .into(),
+            self.settings.show_side_bar
+                .then(|| widget::container(widget::space()).width(0).into())
+                .unwrap_or_else(|| widget::container(
+                    widget::button("")
+                        .style(|_, _| widget::button::Style {
+                            background: Some(iced::Background::Color(Color::from_rgba8(
+                                0, 0, 0, 0.4,
+                            ))),
+                            ..widget::button::Style::default()
+                        })
+                        .width(iced::Fill)
+                        .height(iced::Fill)
+                        .on_press(Message::SwitchSideBarShow),
+                ).width(iced::Fill)
+                    .height(iced::Fill)
+                    .into())
         ])
-            .width(iced::Fill)
-            .height(iced::Fill)
             .into()
     }
     fn check_music_in_tag(&self, k: &String) -> Option<Message> {
-        if let Some(x) = self.tags.get(k) {
+        if let Some(x) = self.store.tags.get(k) {
             return if x.contains(&self.operate_files.clone().unwrap_or_else(|| MusicFile::default())) {
                 None
             } else {
@@ -320,7 +667,7 @@ impl RIMusic {
         if self.new_tag.is_empty() {
             None
         } else {
-            if let Some(_) = self.tags.get(&self.new_tag) {
+            if let Some(_) = self.store.tags.get(&self.new_tag) {
                 None
             } else {
                 Some(Message::AddTag)
@@ -329,7 +676,7 @@ impl RIMusic {
     }
     fn modal_add_tag(&self) -> iced::Element<'_, Message> {
         let mut names = vec![];
-        for (k, _v) in self.tags.iter() {
+        for (k, _v) in self.store.tags.iter() {
             names.push(
                 widget::button(
                     widget::text(k.clone()).wrapping(widget::text::Wrapping::WordOrGlyph),
@@ -398,7 +745,7 @@ impl RIMusic {
 
     fn music_card(&self, title: MusicFile) -> iced::Element<'_, Message> {
         let p = title.clone();
-        widget::container(
+        CommonWidget::panel(
             widget::column![
             widget::text(p.music.file_name().unwrap().to_string_lossy().to_string()).size(24),
             widget::row![
@@ -423,39 +770,32 @@ impl RIMusic {
                 ]
                 .width(iced::Fill)
                 .align_y(iced::alignment::Vertical::Center),
-                ]
-        ).padding(18)
-            .style(|x| widget::container::Style {
-                background: Some(iced::Background::Color(x.palette().background)),
-                border: iced::Border {
-                    color: x.palette().text,
-                    width: 2.0,
-                    radius: iced::border::Radius::new(4)
-                },
-                ..widget::container::Style::default()
-            })
-            .into()
+                ].into()
+        )
     }
 
     fn main_view(&self) -> iced::Element<'_, Message> {
         let mut cards = vec![];
-        for f in self.music_files.iter() {
+        for f in self.store.music_files.iter() {
             cards.push(self.music_card(f.clone()))
         }
         let act = cards.is_empty();
         CommonWidget::view_builder(widget::column![
-            CommonWidget::title_bar("MainView".to_string(), widget::space().into(), None),
+            CommonWidget::title_bar("MainView".to_string(), None, None, &self.settings),
             Self::show_or_text(widget::column(cards).spacing(12).into(), "空空如也,像冬天的落叶一样", act),
         ].spacing(12))
     }
     fn tags_view(&self) -> iced::Element<'_, Message> {
         let mut tagcs = vec![];
-        for k in self.tags.keys() {
+        for k in self.store.tags.keys() {
             tagcs.push(self.tags_card(k.to_string()))
         }
         let act = tagcs.is_empty();
         CommonWidget::view_builder(widget::column![
-            CommonWidget::title_bar("TagsView".to_string(), widget::button("+").on_press(Message::OpenNewTagMsg).into(), None),
+            CommonWidget::title_bar("TagsView".to_string(),
+                Some(widget::button("+").on_press(Message::OpenNewTagMsg).into()),
+                None,
+                &self.settings),
             Self::show_or_text(widget::grid(tagcs).fluid(200).spacing(8).into(), "什么都没有,来创建一个新的标签吧!", act),
         ].spacing(12)
         )
@@ -467,7 +807,7 @@ impl RIMusic {
         }
         let act = self.search_text.is_empty();
         CommonWidget::view_builder(widget::column![
-            CommonWidget::title_bar("SearchView".to_string(), widget::space().into(), None),
+            CommonWidget::title_bar("SearchView".to_string(), None, None, &self.settings),
             widget::text_input("搜你所爱", &self.search_text)
                 .on_input(Message::WhenSearchTextType)
                 .width(iced::Fill),
@@ -477,19 +817,68 @@ impl RIMusic {
     }
     fn tag_view(&self, tag: String) -> iced::Element<'_, Message> {
         let mut cards = vec![];
-        for f in self.tags.get(&tag).unwrap() {
+        for f in self.store.tags.get(&tag).unwrap() {
             cards.push(self.music_card(f.clone()))
         }
         let act = cards.is_empty();
         CommonWidget::view_builder(widget::column![
-            CommonWidget::title_bar(tag.clone(), widget::button("🗑").style(widget::button::danger).on_press(Message::RemoveTag(tag)).into(), Some(Message::GoView(View::Tags))),
+            CommonWidget::title_bar(
+                tag.clone(),
+                Some(widget::button("🗑").style(widget::button::danger).on_press(Message::RemoveTag(tag)).into()),
+                Some(Message::GoView(View::Tags)),
+                &self.settings),
             Self::show_or_text(widget::column(cards).spacing(12).into(), "嗯...加点什么好呢?", act),
         ].spacing(12)
         )
     }
+    fn settings_view(&self) -> iced::Element<'_, Message> {
+        let mut so = vec![];
+        for i in &self.store.search_origin {
+            so.push(CommonWidget::path_show(i))
+        }
+        CommonWidget::view_builder(
+            widget::column![
+                CommonWidget::title_bar("SettingsView".to_string(), None, None, &self.settings),
+                widget::scrollable(
+                    widget::column(
+                        [
+                            CommonWidget::setting_group("常规".to_string(),
+                                widget::column![
+                                    CommonWidget::setting_card("保留播放状态".to_string(), widget::toggler(self.settings.keep_state).on_toggle(|x| Message::WhenSettingChanged(SettingKeys::KeepPlayState(x))).into()),
+                                    CommonWidget::expand_content("搜索源".to_string(),
+                                        widget::container(
+                                            widget::column![
+                                                widget::scrollable(
+                                                    widget::column(so).spacing(12)
+                                                ).height(200),
+                                                widget::container(
+                                                    widget::button("添加").on_press(Message::OnAddSearchOriginClicked)
+                                                ).width(iced::Fill).align_x(iced::alignment::Horizontal::Center)
+                                            ]
+                                        ).into(),
+                                        &self.show_exp_search_origin, Message::WhenExpSearchOriginClicked),
+                                ].spacing(12).into()
+                            ),
+                            CommonWidget::setting_group("外观".to_string(),
+                                widget::column![
+                                    CommonWidget::setting_card("侧边栏常驻".to_string(), widget::toggler(self.settings.show_side_bar)
+                                        .on_toggle(|x| Message::WhenSettingChanged(SettingKeys::ShowSideBar(x))).into())
+                                ].spacing(12).into()
+                            ),
+                            CommonWidget::setting_group("关于".to_string(), widget::column![
+                                widget::text("版本: v1.0.0").size(18),
+                                widget::text("作者: 氢気氚").size(18)
+                            ].into())
+                        ]
+                    ).spacing(32)
+                )
+            ]
+
+        )
+    }
     fn play_bar(&self) -> iced::Element<'_, Message> {
         let sub1 = iced_aw::menu::Item::with_menu(
-            widget::button(widget::text(self.playback_type.to_string()))
+            widget::button(widget::text(self.player.playback_type.to_string()))
                 .style(widget::button::text),
             Menu::new(
                 [
@@ -519,26 +908,41 @@ impl RIMusic {
                 .width(iced::Length::Shrink),
         );
         let bar = iced_aw::MenuBar::new([sub1].into());
+        let vols = iced_aw::menu::Item::with_menu(
+            widget::button(widget::text(format!("音量:{}", ((self.settings.volume as f32) * 100f32) as i32)))
+                .style(widget::button::text),
+            Menu::new(
+                [
+                    iced_aw::menu::Item::new(
+                        widget::vertical_slider(0..=100, ((self.settings.volume as f32) * 100f32) as i32, |x| Message::WhenSettingChanged(SettingKeys::Volume(x as f32 / 100f32 as Float)))
+                            .step(1)
+                            .height(200)
+                    )
+                ].into()
+            ).padding(18).width(iced::Length::Shrink),
+        );
+        let vol = iced_aw::MenuBar::new([vols].into());
         widget::container(
             widget::column![
-                widget::text(&self.music_name).size(48),
+                widget::text(&self.player.music_name).size(48),
                 widget::row![
                     widget::text(Self::format_time(
-                        Duration::from_millis(self.value as u64).as_secs_f64()
+                        Duration::from_millis(self.player.value as u64).as_secs_f64()
                     ))
                     .size(28),
-                    widget::button("⏮").on_press_maybe(self.now_playing.is_some().then(|| Some(Message::PrevMusic)).unwrap_or_else(|| None)),
+                    widget::button("⏮").on_press_maybe(self.player.now_playing.is_some().then(|| Some(Message::PrevMusic)).unwrap_or_else(|| None)),
                     widget::button(
-                        (self.play_state == PlayState::Play)
+                        (self.player.play_state == PlayState::Play)
                             .then(|| "⏸")
                             .unwrap_or_else(|| "▶️")
                     )
                     .on_press(Message::OnPSSwitchClicked),
-                    widget::button("️⏭").on_press_maybe(self.now_playing.is_some().then(|| Some(Message::NextMusic)).unwrap_or_else(|| None)),
+                    widget::button("️⏭").on_press_maybe(self.player.now_playing.is_some().then(|| Some(Message::NextMusic)).unwrap_or_else(|| None)),
                     bar,
+                    vol,
                     widget::slider(
-                        0f64..=self.total_dur.as_millis() as f64,
-                        self.value,
+                        0f64..=self.player.total_music_time.as_millis() as f64,
+                        self.player.value,
                         Message::OnValueChanged
                     )
                     .step(0.01)
@@ -555,12 +959,18 @@ impl RIMusic {
     }
     fn content(&self) -> iced::Element<'_, Message> {
         widget::column![
-            match &self.view {
-                View::MainView => self.main_view(),
-                View::Tags => self.tags_view(),
-                View::TagView(t) => self.tag_view(t.clone()),
-                View::SearchView => self.search_view()
-            },
+            widget::row![
+                self.settings.show_side_bar
+                    .then(|| widget::container(self.side_bar()))
+                    .unwrap_or_else(|| widget::container(widget::space())),
+                match &self.view {
+                    View::MainView => self.main_view(),
+                    View::Tags => self.tags_view(),
+                    View::TagView(t) => self.tag_view(t.clone()),
+                    View::SearchView => self.search_view(),
+                    View::Settings => self.settings_view()
+                }
+            ],
             self.play_bar()
         ]
             .height(iced::Fill)
@@ -597,198 +1007,122 @@ impl RIMusic {
 // 工具方法
 impl RIMusic {
     fn search_music_file(&self, text: &String) -> Vec<MusicFile> {
-        let ret: Vec<_> = self.music_files.iter()
+        let ret: Vec<_> = self.store.music_files.iter()
             .filter(|x| x.music.to_string_lossy().to_lowercase().contains(&text.to_lowercase()))
             .map(|x| x.clone())
             .collect();
         ret
     }
-    fn get_music_file() -> Vec<PathBuf> {
-        let mut files = vec![];
-        if let Some(v) = dirs::audio_dir() {
-            for f in std::fs::read_dir(v).unwrap() {
-                let f = f.unwrap();
-                let path = f.path();
-                if path.is_file() {
-                    files.push(path)
-                }
-            }
-        } else {
-            return vec![];
-        }
-        files
-    }
     fn format_time(seconds: f64) -> String {
         let secs = seconds as u64;
         format!("{}:{:02}", secs / 60, secs % 60)
     }
-    fn play_music(&mut self, p: &mut MusicFile) {
-        let file = std::fs::File::open(&p.music).unwrap();
-        self.now_playing = Some(p.clone());
-        if let Ok(source) = rodio::Decoder::try_from(file) {
-            self.play_state = PlayState::Play;
-            self.total_dur = p.get_music_file_total_duration();
-            match &self.play_list {
-                PlayList::AllMusic => {
-                    let idx = self.find_music();
-                    p.get_music_file_total_duration();
-                    self.music_files[idx] = p.clone();
-                }
-                PlayList::Tags(t) => {
-                    let idx = self.find_music();
-                    p.get_music_file_total_duration();
-                    self.tags.get_mut(t).unwrap()[idx] = p.clone();
-                }
-            }
-            self.music_player.clear();
-            self.value = self.music_player.get_pos().as_millis() as f64;
-            self.music_player.append(source);
-            self.music_player.play();
-        } else {
-            self.show_music_open_failure = true;
-        }
-        let name = p.music.file_name().unwrap().to_str().unwrap().to_string();
-        let chars: Vec<_> = name.chars().collect();
-        if chars.iter().len() > 20 {
-            let pre20 = String::from_iter(chars.get(..20).unwrap().to_owned().iter());
-            self.music_name = format!("{}...", pre20);
-        } else {
-            self.music_name = name;
-        }
-    }
-    fn find_music(&self) -> usize {
-        match &self.play_list {
-            PlayList::AllMusic => {
-                self
-                    .music_files
-                    .iter()
-                    .position(|x| {
-                        x.clone() == self.now_playing.clone().unwrap()
-                    })
-                    .unwrap()
-            }
-            PlayList::Tags(t) => {
-                let music_files = &self.tags[t];
-                music_files
-                    .iter()
-                    .position(|x| {
-                        x.clone() == self.now_playing.clone().unwrap()
-                    })
-                    .unwrap()
+    fn init(player: &mut Player, store: &mut MusicStore, settings: &Settings) {
+        store.search_origin = settings.search_origin.clone();
+        store.tags = settings.tags.clone();
+        store.sync();
+        player.set_volume(settings.volume);
+        if settings.keep_state {
+            player.total_music_time = settings.last_music.is_some()
+                .then(|| settings.last_music.clone().unwrap().get_music_file_total_duration())
+                .unwrap_or_else(|| Duration::from_secs(0));
+            player.playback_type = settings.last_playback;
+            player.play_list = settings.last_playlist.clone();
+            if settings.last_music.is_some() {
+                let _ = player.play_music(&mut settings.last_music.clone().unwrap(), store);
+                player.music_player.pause();
+                player.set_pos(settings.last_position);
+                player.play_state = PlayState::Stop;
             }
         }
-    }
-    fn music_play_push(&mut self, pidx: i64) {
-        match &self.play_list {
-            PlayList::AllMusic => {
-                let mut idx = self.find_music();
-                let ret = idx  as i64 + pidx;
-                if ret == self.music_files.len() as i64 {
-                    idx = 0;
-                } else if ret < 0 {
-                    idx = self.music_files.len() - 1;
-                } else {
-                    idx = ret as usize;
-                }
-                self.play_music(&mut self.music_files[idx].clone());
-            }
-            PlayList::Tags(t) => {
-                let music_files = &self.tags[t];
-                let mut idx = self.find_music();
-                let ret = idx  as i64 + pidx;
-                if ret == music_files.len() as i64 {
-                    idx = 0;
-                } else if ret < 0 {
-                    idx = music_files.len() - 1;
-                } else {
-                    idx = ret as usize;
-                }
-                self.play_music(&mut music_files[idx].clone());
-            }
-        }
-    }
-    fn player_default(&mut self) {
-        self.now_playing = None;
-        self.music_player.stop();
-        self.play_state = PlayState::Stop;
-        self.value = 0.0;
-        self.music_player.try_seek(Duration::from_secs(0)).unwrap();
-        self.music_name = String::from("TEST MUSIC TITLE");
     }
 }
 
 // 执行逻辑
 impl RIMusic {
-    fn update(&mut self, msg: Message) {
+    fn update(&mut self, msg: Message) -> iced::Task<Message> {
         match msg {
             Message::OnValueChanged(x) => {
-                self.music_player.pause();
-                self.play_state = PlayState::Stop;
-                self.value = x;
-                self.music_player
+                self.player.music_player.pause();
+                self.player.play_state = PlayState::Stop;
+                self.player.value = x;
+                self.player.music_player
                     .try_seek(Duration::from_millis(x as u64))
                     .unwrap();
             }
             Message::PlayMusic(mut p) => {
                 match &self.view {
-                    View::TagView(t) => self.play_list = PlayList::Tags(t.clone()),
-                    View::MainView => self.play_list = PlayList::AllMusic,
+                    View::TagView(t) => self.player.play_list = PlayList::Tags(t.clone()),
+                    View::MainView => self.player.play_list = PlayList::AllMusic,
                     View::Tags => (),
-                    View::SearchView => self.play_list = PlayList::AllMusic
+                    View::SearchView => self.player.play_list = PlayList::AllMusic,
+                    View::Settings => ()
                 }
-                self.play_music(&mut p);
+                if let Err(_) = self.player.play_music(&mut p, &mut self.store) {
+                    self.show_music_open_failure = true
+                }
             }
             Message::Sync => {
-                self.value = self.music_player.get_pos().as_millis() as f64;
-                if self.music_player.empty() {
-                    if let Some(p) = &self.now_playing {
-                        match self.playback_type {
+                self.player.value = self.player.music_player.get_pos().as_millis() as f64;
+                if self.player.music_player.empty() {
+                    if let Some(p) = &self.player.now_playing {
+                        match self.player.playback_type {
                             PlaybackType::OnceStop => {
-                                self.play_state = PlayState::Stop;
+                                self.player.play_state = PlayState::Stop;
                             }
                             PlaybackType::OneWhile => {
-                                self.play_music(&mut p.clone());
-                                self.play_state = PlayState::Play;
-                                self.music_player.play();
+                                if let Err(_) = self.player.play_music(&mut p.clone(), &mut self.store) {
+                                    self.show_music_open_failure = true
+                                }
+                                self.player.play_state = PlayState::Play;
+                                self.player.music_player.play();
                             }
-                            PlaybackType::MusicNext => self.music_play_push(1),
-                            PlaybackType::RadomPlay => match &self.play_list {
+                            PlaybackType::MusicNext => {
+                                if let Err(_) = self.player.music_play_push(1, &mut self.store) {
+                                    self.show_music_open_failure = true
+                                }
+                            }
+                            PlaybackType::RadomPlay => match &self.player.play_list {
                                 PlayList::AllMusic => {
-                                    let idx = rand::random_range(0..self.music_files.len());
-                                    self.play_music(&mut self.music_files[idx].clone());
+                                    let idx = rand::random_range(0..self.store.music_files.len());
+                                    if let Err(_) = self.player.play_music(&mut self.store.music_files[idx].clone(), &mut self.store) {
+                                        self.show_music_open_failure = true
+                                    }
                                 }
                                 PlayList::Tags(t) => {
-                                    let music_files = &self.tags[t];
+                                    let music_files = &self.store.tags[t];
                                     let idx = rand::random_range(0..music_files.len());
-                                    self.play_music(&mut music_files[idx].clone());
+                                    if let Err(_) = self.player.play_music(&mut music_files[idx].clone(), &mut self.store) {
+                                        self.show_music_open_failure = true
+                                    }
                                 }
                             },
                         }
                     }
-                    self.value = 0.0;
-                    self.music_player.try_seek(Duration::from_secs(0)).unwrap();
+                    self.player.value = 0.0;
+                    self.player.music_player.try_seek(Duration::from_secs(0)).unwrap();
                 }
             }
             Message::OnReleaseSlider => {
                 if !self.force_stop {
-                    self.music_player.play();
-                    self.play_state = PlayState::Play;
+                    self.player.music_player.play();
+                    self.player.play_state = PlayState::Play;
                 }
             }
-            Message::OnPSSwitchClicked => match self.play_state {
+            Message::OnPSSwitchClicked => match self.player.play_state {
                 PlayState::Play => {
-                    self.music_player.pause();
-                    self.play_state = PlayState::Stop;
+                    self.player.music_player.pause();
+                    self.player.play_state = PlayState::Stop;
                     self.force_stop = true;
                 }
                 PlayState::Stop => {
-                    self.music_player.play();
-                    self.play_state = PlayState::Play;
+                    self.player.music_player.play();
+                    self.player.play_state = PlayState::Play;
                     self.force_stop = false;
                 }
             },
             Message::CloseMusicOpenFailureMsg => self.show_music_open_failure = false,
-            Message::OnPlaybackTypeChanged(p) => self.playback_type = p,
+            Message::OnPlaybackTypeChanged(p) => self.player.playback_type = p,
             Message::SwitchSideBarShow => self.side_bar_show = !self.side_bar_show,
             Message::GoView(v) => {
                 self.view = v;
@@ -799,10 +1133,10 @@ impl RIMusic {
                 self.operate_files = Some(p)
             }
             Message::AddTagTo(t, p) => {
-                if let Some(v) = self.tags.get_mut(&t) {
+                if let Some(v) = self.store.tags.get_mut(&t) {
                     v.push(p);
                 } else {
-                    self.tags.insert(t, vec![p]);
+                    self.store.tags.insert(t, vec![p]);
                 }
                 self.show_set_tag_modal = false;
             }
@@ -814,50 +1148,77 @@ impl RIMusic {
                 self.new_tag.clear();
             }
             Message::AddTag => {
-                self.tags.insert(self.new_tag.clone(), vec![]);
+                self.store.tags.insert(self.new_tag.clone(), vec![]);
                 self.show_new_tag_modal = false;
                 self.new_tag.clear();
             }
-            Message::PrevMusic => self.music_play_push(-1),
-            Message::NextMusic => self.music_play_push(1),
+            Message::PrevMusic => {
+                if let Err(_) = self.player.music_play_push(-1, &mut self.store) {
+                    self.show_music_open_failure = true
+                }
+            },
+            Message::NextMusic => {
+                if let Err(_) = self.player.music_play_push(1, &mut self.store) {
+                    self.show_music_open_failure = true
+                }
+            }
             Message::RemoveMusicFromTag(p) => {
                 if let View::TagView(t) = &self.view {
-                    let idx = self.tags.get(t).unwrap()
-                        .iter().position(|x| *x == p).unwrap();
-                    self.tags.get_mut(t).unwrap().remove(idx);
-                    if let Some(x) = &self.now_playing {
-                        if *x == p {
-                        self.player_default()
-                        }
-                    }
+                    self.store.remove_music_from_tag(&mut self.player, t, p)
                 }
             }
             Message::RemoveTag(t) => {
                 self.view = View::Tags;
-                self.tags.remove(&t);
-                if let PlayList::Tags(tx) = &self.play_list {
-                    if *tx == t {
-                        self.player_default()
-                    }
-                }
+                self.store.remove_tag(&mut self.player, t);
             }
             Message::WhenSearchTextType(s) => {
                 self.search_text = s
             }
+            Message::WhenExpSearchOriginClicked => self.show_exp_search_origin = !self.show_exp_search_origin,
+            Message::WhenSettingChanged(t) => {
+                self.settings.set_setting(t.clone());
+                if let SettingKeys::Volume(f) = t {
+                    self.player.set_volume(f);
+                }
+            }
+            Message::DeleteOriginPath(p) => {
+                self.store.remove_search_origin(p);
+                self.store.sync();
+            }
+            Message::OnAddSearchOriginClicked => {
+                let path = rfd::FileDialog::new().pick_folder();
+                if let Some(pat) = path {
+                    let idx = self.store.search_origin.iter().position(|x| *x == pat);
+                    if let None = idx {
+                    self.store.search_origin.push(pat);
+                    self.store.sync_only_push();
+                    }
+                }
+            }
+            Message::CloseSave => {
+                let export = self.settings.save(&self.store, &self.player);
+                let _ = confy::store("RIMusic", None, export);
+                self.exit = true
+            }
         }
+        if self.exit {
+            return iced::exit()
+        }
+        iced::Task::none()
     }
     fn subscription(&self) -> iced::Subscription<Message> {
-        if self.play_state == PlayState::Play {
+        if self.player.play_state == PlayState::Play {
             return iced::time::every(Duration::from_millis(50)).map(|_| Message::Sync);
         }
-        iced::Subscription::none()
+        iced::window::close_requests().map(|_| Message::CloseSave)
     }
 }
 
 fn main() -> iced::Result {
-    let m = iced::Theme::Custom(Arc::new(Custom::new("Metro".to_string(), metro())));
+    let m = iced::Theme::Custom(Arc::new(Custom::new("Caption".to_string(), cap())));
     iced::application(RIMusic::default, RIMusic::update, RIMusic::view)
         .subscription(RIMusic::subscription)
         .theme(m)
+        .exit_on_close_request(false)
         .run()
 }
