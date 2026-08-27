@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use iced::theme::{Custom, Palette};
+use lofty::file::TaggedFile;
 use serde::{Deserialize, Serialize};
 
 fn cap() -> Palette {
@@ -25,6 +26,7 @@ fn cap() -> Palette {
 enum PlayList {
     AllMusic,
     Tags(String),
+    Artist(String)
 }
 
 #[derive(Clone, Serialize, Deserialize, Copy)]
@@ -72,7 +74,8 @@ enum Message {
     WhenSettingChanged(SettingKeys),
     DeleteOriginPath(PathBuf),
     OnAddSearchOriginClicked,
-    CloseSave
+    CloseSave,
+    ReadFileData
 }
 #[derive(PartialEq)]
 enum PlayState {
@@ -83,22 +86,26 @@ enum PlayState {
 #[derive(Clone, PartialEq)]
 enum View {
     MainView,
-    Tags,
+    TagsView,
     TagView(String),
     SearchView,
-    Settings
+    SettingsView,
+    ArtistsView,
+    ArtistView(String)
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 struct MusicFile {
     music: PathBuf,
-    duration: Option<Duration>
+    duration: Option<Duration>,
+    artist: Option<String>
 }
 impl Default for MusicFile {
     fn default() -> Self {
         Self {
             music: PathBuf::new(),
-            duration: None
+            duration: None,
+            artist: None
         }
     }
 }
@@ -109,9 +116,46 @@ impl PartialEq for MusicFile {
 }
 
 impl MusicFile {
-    fn get_music_file_total_duration(&mut self) -> Duration {
+    fn _set_value(&mut self, val: TaggedFile) {
+        self.duration = Some(val.properties().duration());
+        if let Some(val) = val.primary_tag() {
+            if let Some(art) = val.artist() {
+                self.artist = Some(art.to_string());
+            } else {
+                self.artist = Some("群星".to_string());
+            }
+        } else {
+            self.artist = Some("群星".to_string());
+        }
+    }
+    fn get_music_all_data(&mut self) {
+        if self.artist.is_some() {
+            return;
+        }
+        if let Ok(v) = lofty::probe::Probe::open(self.music.clone()) {
+            if let Ok(val) = v.read() {
+                self._set_value(val)
+            }
+        }  else {
+            self.get_music_file_total_duration();
+            self.artist = Some("群星".to_string());
+        }
+    }
+    fn get_music_file_artist(&mut self) {
+        println!("Read artist...");
+        if self.artist.is_some() {
+            return;
+        }
+        if let Ok(tf) = lofty::probe::Probe::open(self.music.clone()).unwrap().read() {
+            self._set_value(tf)
+        } else {
+            self.artist = Some("群星".to_string());
+        }
+    }
+    fn get_music_file_total_duration(&mut self) {
+        println!("Read time...");
         if let Some(_) = self.duration {
-            return self.duration.unwrap()
+            return;
         }
         if let Ok(tf) = lofty::probe::Probe::open(self.music.clone()).unwrap().read() {
             self.duration = Some(tf.properties().duration());
@@ -125,7 +169,6 @@ impl MusicFile {
                 self.duration = Some(Duration::from_secs(0u64));
             }
         }
-        self.duration.unwrap()
     }
 
 }
@@ -275,6 +318,7 @@ struct MusicStore {
     search_origin: Vec<PathBuf>,
     music_files: Vec<MusicFile>,
     tags: HashMap<String, Vec<MusicFile>>,
+    artists: HashMap<String, Vec<MusicFile>>
 }
 
 impl MusicStore {
@@ -282,7 +326,8 @@ impl MusicStore {
         MusicStore {
             search_origin: vec![],
             music_files: vec![],
-            tags: HashMap::new()
+            tags: HashMap::new(),
+            artists: HashMap::new()
         }
     }
     fn get_music_file() -> PathBuf {
@@ -294,14 +339,16 @@ impl MusicStore {
     }
     fn sync(&mut self) {
         self.music_files.clear();
+        self.artists.clear();
         self.sync_only_push();
     }
     fn sync_only_push(&mut self) {
         for p in self.search_origin.iter() {
             for f in Self::get_music_file_from_path(p) {
-                let mut mf = MusicFile {
+                let mf = MusicFile {
                     music: f,
-                    duration: None
+                    duration: None,
+                    artist: None
                 };
                 self.music_files.push(mf);
             }
@@ -362,6 +409,15 @@ impl MusicStore {
                     })
                     .unwrap()
             }
+            PlayList::Artist(a) => {
+                let music_files = &self.artists[a];
+                music_files
+                    .iter()
+                    .position(|x| {
+                        x.clone() == player.now_playing.clone().unwrap()
+                    })
+                    .unwrap()
+            }
         }
     }
     fn remove_search_origin(&mut self, p: PathBuf) {
@@ -402,22 +458,38 @@ impl Player {
             value: 0f64,
         }
     }
+    fn verification_file(f: &MusicFile) -> bool {
+        let file = std::fs::File::open(&f.music).unwrap();
+        rodio::Decoder::try_from(file).is_ok()
+    }
     fn play_music(&mut self, p: &mut MusicFile, store: &mut MusicStore) -> Result<(), ()> {
+        if !Self::verification_file(&p) {
+            return Err(())
+        }
         let file = std::fs::File::open(&p.music).unwrap();
         self.now_playing = Some(p.clone());
         if let Ok(source) = rodio::Decoder::try_from(file) {
             self.play_state = PlayState::Play;
-            self.total_music_time = p.get_music_file_total_duration();
+            p.get_music_file_total_duration();
+            self.total_music_time = p.duration.unwrap();
             match &self.play_list {
                 PlayList::AllMusic => {
                     let idx = store.find_music(self);
                     p.get_music_file_total_duration();
+                    p.get_music_file_artist();
                     store.music_files[idx] = p.clone();
                 }
                 PlayList::Tags(t) => {
                     let idx = store.find_music(self);
                     p.get_music_file_total_duration();
+                    p.get_music_file_artist();
                     store.tags.get_mut(t).unwrap()[idx] = p.clone();
+                }
+                PlayList::Artist(a) => {
+                    let idx = store.find_music(self);
+                    p.get_music_file_total_duration();
+                    p.get_music_file_artist();
+                    store.artists.get_mut(a).unwrap()[idx] = p.clone();
                 }
             }
             self.music_player.clear();
@@ -440,29 +512,21 @@ impl Player {
     fn music_play_push(&mut self, pidx: i64, store: &mut MusicStore) -> Result<(), ()> {
         match &self.play_list {
             PlayList::AllMusic => {
-                let mut idx = store.find_music(self);
-                let ret = idx  as i64 + pidx;
-                if ret == store.music_files.len() as i64 {
-                    idx = 0;
-                } else if ret < 0 {
-                    idx = store.music_files.len() - 1;
-                } else {
-                    idx = ret as usize;
-                }
-                self.play_music(&mut store.music_files[idx].clone(), store)
+                let idx = store.find_music(self);
+                let ret = ((idx as i64 + pidx) % store.music_files.len() as i64) as usize;
+                self.play_music(&mut store.music_files[ret].clone(), store)
             }
             PlayList::Tags(t) => {
                 let music_files = &store.tags[t];
-                let mut idx = store.find_music(self);
-                let ret = idx  as i64 + pidx;
-                if ret == music_files.len() as i64 {
-                    idx = 0;
-                } else if ret < 0 {
-                    idx = music_files.len() - 1;
-                } else {
-                    idx = ret as usize;
-                }
-                self.play_music(&mut music_files[idx].clone(), store)
+                let idx = store.find_music(self);
+                let ret = ((idx as i64 + pidx) % music_files.len() as i64) as usize;
+                self.play_music(&mut music_files[ret].clone(), store)
+            }
+            PlayList::Artist(a) => {
+                let music_files = &store.artists[a];
+                let idx = store.find_music(self);
+                let ret = ((idx as i64 + pidx) % music_files.len() as i64) as usize;
+                self.play_music(&mut music_files[ret].clone(), store)
             }
         }
     }
@@ -554,7 +618,9 @@ struct RIMusic {
     show_exp_search_origin: bool,
     store: MusicStore,
     settings: Settings,
-    exit: bool
+    exit: bool,
+    idx: usize,
+    read_f: bool
 }
 
 impl Default for RIMusic {
@@ -577,7 +643,9 @@ impl Default for RIMusic {
             search_text: String::new(),
             show_exp_search_origin: false,
             settings,
-            exit: false
+            exit: false,
+            idx: 0,
+            read_f: true
         }
     }
 }
@@ -603,6 +671,25 @@ impl RIMusic {
             .padding(8)
             .into()
     }
+    fn artists_card(&self, artist: String) -> iced::Element<'_, Message> {
+        widget::button(
+            widget::column![
+                widget::text(artist.clone())
+                    .size(28)
+                    .width(iced::Fill)
+                    .height(iced::Fill)
+                    .wrapping(widget::text::Wrapping::WordOrGlyph),
+                widget::text(self.store.artists.get(&artist).unwrap().len())
+                    .width(iced::Fill)
+                    .align_x(iced::alignment::Horizontal::Right)
+                    .size(48)
+                    .style(widget::text::base)
+            ].width(iced::Fill)
+        )
+            .on_press(Message::GoView(View::ArtistView(artist)))
+            .padding(8)
+            .into()
+    }
 
     fn side_bar(&self) -> iced::Element<'_, Message> {
         widget::row([
@@ -613,10 +700,11 @@ impl RIMusic {
                         .style(widget::text::primary),
                     widget::space().height(48),
                     CommonWidget::side_bar_button(&self, String::from("曲库"), View::MainView),
-                    CommonWidget::side_bar_button(&self, String::from("标签"), View::Tags),
+                    CommonWidget::side_bar_button(&self, String::from("标签"), View::TagsView),
                     CommonWidget::side_bar_button(&self, String::from("搜索"), View::SearchView),
+                    CommonWidget::side_bar_button(&self, String::from("艺术家"), View::ArtistsView),
                     widget::container(
-                        CommonWidget::side_bar_button(&self, String::from("设置"), View::Settings)
+                        CommonWidget::side_bar_button(&self, String::from("设置"), View::SettingsView)
                     ).height(iced::Fill).align_y(iced::alignment::Vertical::Bottom)
                 ]
                     .spacing(8)
@@ -745,13 +833,21 @@ impl RIMusic {
 
     fn music_card(&self, title: MusicFile) -> iced::Element<'_, Message> {
         let p = title.clone();
+        let z = title.clone();
         CommonWidget::panel(
             widget::column![
             widget::text(p.music.file_name().unwrap().to_string_lossy().to_string()).size(24),
             widget::row![
-                    widget::text((title.duration.is_some())
-                        .then(|| Self::format_time(title.duration.unwrap().as_secs_f64()))
-                        .unwrap_or_else(|| "--:--".to_string())),
+                    widget::row![
+                        widget::text(title.duration.is_some()
+                            .then(|| Self::format_time(title.duration.unwrap().as_secs_f64()))
+                            .unwrap_or_else(|| "--:--".to_string())),
+                        widget::text("|"),
+                        widget::text(z.artist.is_some()
+                            .then(|| z.artist.unwrap().clone().to_owned())
+                            .unwrap_or_else(|| "--".to_string())
+                        )
+                    ],
                     widget::container(
                         widget::row![
                             match &self.view {
@@ -825,7 +921,7 @@ impl RIMusic {
             CommonWidget::title_bar(
                 tag.clone(),
                 Some(widget::button("🗑").style(widget::button::danger).on_press(Message::RemoveTag(tag)).into()),
-                Some(Message::GoView(View::Tags)),
+                Some(Message::GoView(View::TagsView)),
                 &self.settings),
             Self::show_or_text(widget::column(cards).spacing(12).into(), "嗯...加点什么好呢?", act),
         ].spacing(12)
@@ -874,6 +970,37 @@ impl RIMusic {
                 )
             ]
 
+        )
+    }
+    fn artists_view(&self) -> iced::Element<'_, Message> {
+        let mut artists = vec![];
+        for k in self.store.artists.keys() {
+            artists.push(self.artists_card(k.to_string()))
+        }
+        let act = artists.is_empty();
+        CommonWidget::view_builder(widget::column![
+            CommonWidget::title_bar("ArtistsView".to_string(),
+                None,
+                None,
+                &self.settings),
+            Self::show_or_text(widget::grid(artists).fluid(200).spacing(8).into(), "群星...", act),
+        ].spacing(12)
+        )
+    }
+    fn artist_view(&self, artist: String) -> iced::Element<'_, Message> {
+        let mut cards = vec![];
+        for f in self.store.artists.get(&artist).unwrap() {
+            cards.push(self.music_card(f.clone()))
+        }
+        let act = cards.is_empty();
+        CommonWidget::view_builder(widget::column![
+            CommonWidget::title_bar(
+                artist.clone(),
+                None,
+                Some(Message::GoView(View::ArtistsView)),
+                &self.settings),
+            Self::show_or_text(widget::column(cards).spacing(12).into(), "嗯...为什么是空的呢,但你是不可能看到这个字的!😨", act),
+        ].spacing(12)
         )
     }
     fn play_bar(&self) -> iced::Element<'_, Message> {
@@ -965,10 +1092,12 @@ impl RIMusic {
                     .unwrap_or_else(|| widget::container(widget::space())),
                 match &self.view {
                     View::MainView => self.main_view(),
-                    View::Tags => self.tags_view(),
+                    View::TagsView => self.tags_view(),
                     View::TagView(t) => self.tag_view(t.clone()),
                     View::SearchView => self.search_view(),
-                    View::Settings => self.settings_view()
+                    View::SettingsView => self.settings_view(),
+                    View::ArtistsView => self.artists_view(),
+                    View::ArtistView(a) => self.artist_view(a.clone())
                 }
             ],
             self.play_bar()
@@ -1024,7 +1153,11 @@ impl RIMusic {
         player.set_volume(settings.volume);
         if settings.keep_state {
             player.total_music_time = settings.last_music.is_some()
-                .then(|| settings.last_music.clone().unwrap().get_music_file_total_duration())
+                .then(|| {
+                    let lm = &mut settings.last_music.clone().unwrap();
+                    lm.get_music_file_total_duration();
+                    lm.duration.unwrap()
+                })
                 .unwrap_or_else(|| Duration::from_secs(0));
             player.playback_type = settings.last_playback;
             player.play_list = settings.last_playlist.clone();
@@ -1054,9 +1187,11 @@ impl RIMusic {
                 match &self.view {
                     View::TagView(t) => self.player.play_list = PlayList::Tags(t.clone()),
                     View::MainView => self.player.play_list = PlayList::AllMusic,
-                    View::Tags => (),
+                    View::TagsView => (),
                     View::SearchView => self.player.play_list = PlayList::AllMusic,
-                    View::Settings => ()
+                    View::SettingsView => (),
+                    View::ArtistsView => (),
+                    View::ArtistView(a) => self.player.play_list = PlayList::Artist(a.clone())
                 }
                 if let Err(_) = self.player.play_music(&mut p, &mut self.store) {
                     self.show_music_open_failure = true
@@ -1091,6 +1226,13 @@ impl RIMusic {
                                 }
                                 PlayList::Tags(t) => {
                                     let music_files = &self.store.tags[t];
+                                    let idx = rand::random_range(0..music_files.len());
+                                    if let Err(_) = self.player.play_music(&mut music_files[idx].clone(), &mut self.store) {
+                                        self.show_music_open_failure = true
+                                    }
+                                }
+                                PlayList::Artist(a) => {
+                                    let music_files = &self.store.artists[a];
                                     let idx = rand::random_range(0..music_files.len());
                                     if let Err(_) = self.player.play_music(&mut music_files[idx].clone(), &mut self.store) {
                                         self.show_music_open_failure = true
@@ -1168,7 +1310,7 @@ impl RIMusic {
                 }
             }
             Message::RemoveTag(t) => {
-                self.view = View::Tags;
+                self.view = View::TagsView;
                 self.store.remove_tag(&mut self.player, t);
             }
             Message::WhenSearchTextType(s) => {
@@ -1184,6 +1326,8 @@ impl RIMusic {
             Message::DeleteOriginPath(p) => {
                 self.store.remove_search_origin(p);
                 self.store.sync();
+                self.idx = 0;
+                self.read_f = true
             }
             Message::OnAddSearchOriginClicked => {
                 let path = rfd::FileDialog::new().pick_folder();
@@ -1193,12 +1337,31 @@ impl RIMusic {
                     self.store.search_origin.push(pat);
                     self.store.sync_only_push();
                     }
+                    self.idx = 0;
+                    self.read_f = true
                 }
             }
             Message::CloseSave => {
                 let export = self.settings.save(&self.store, &self.player);
                 let _ = confy::store("RIMusic", None, export);
                 self.exit = true
+            }
+            Message::ReadFileData => {
+                if self.idx < self.store.music_files.len() {
+                    println!("{}-{:?}", self.store.music_files.len(), self.store.music_files[self.idx].music);
+                    if Player::verification_file(&self.store.music_files[self.idx]) {
+                        self.store.music_files[self.idx].get_music_all_data();
+                        let art = self.store.music_files[self.idx].artist.clone().unwrap();
+                        if self.store.artists.get(&art).is_some() {
+                            self.store.artists.get_mut(&art).unwrap().push(self.store.music_files[self.idx].clone());
+                        } else {
+                            self.store.artists.insert(art, vec![self.store.music_files[self.idx].clone()]);
+                        }
+                    }
+                    self.idx += 1
+                } else {
+                    self.read_f = false
+                }
             }
         }
         if self.exit {
@@ -1207,10 +1370,16 @@ impl RIMusic {
         iced::Task::none()
     }
     fn subscription(&self) -> iced::Subscription<Message> {
-        if self.player.play_state == PlayState::Play {
-            return iced::time::every(Duration::from_millis(50)).map(|_| Message::Sync);
-        }
-        iced::window::close_requests().map(|_| Message::CloseSave)
+        iced::Subscription::batch([
+            iced::window::close_requests().map(|_| Message::CloseSave),
+            (self.player.play_state == PlayState::Play)
+                .then(|| iced::time::every(Duration::from_millis(50)).map(|_| Message::Sync))
+                .unwrap_or_else(|| iced::Subscription::none()),
+            (self.read_f)
+                .then(|| iced::time::every(Duration::from_millis(100)).map(|_| Message::ReadFileData))
+                .unwrap_or_else(|| iced::Subscription::none())
+
+        ])
     }
 }
 
