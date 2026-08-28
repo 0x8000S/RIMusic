@@ -1,3 +1,4 @@
+#![windows_subsystem = "windows"]
 use iced::{widget, Color};
 use iced_aw::Menu;
 use lofty::prelude::*;
