@@ -318,7 +318,9 @@ struct MusicStore {
     search_origin: Vec<PathBuf>,
     music_files: Vec<MusicFile>,
     tags: HashMap<String, Vec<MusicFile>>,
-    artists: HashMap<String, Vec<MusicFile>>
+    artists: HashMap<String, Vec<MusicFile>>,
+    idx: usize,
+    is_read: bool
 }
 
 impl MusicStore {
@@ -327,7 +329,9 @@ impl MusicStore {
             search_origin: vec![],
             music_files: vec![],
             tags: HashMap::new(),
-            artists: HashMap::new()
+            artists: HashMap::new(),
+            idx: 0,
+            is_read: true
         }
     }
     fn get_music_file() -> PathBuf {
@@ -427,6 +431,32 @@ impl MusicStore {
             self.search_origin.remove(val);
         }
     }
+    fn read_one(&mut self) {
+        if self.idx < self.music_files.len() {
+            println!("{}-{:?}", self.music_files.len(), self.music_files[self.idx].music);
+            if Player::verification_file(&self.music_files[self.idx]) {
+                self.music_files[self.idx].get_music_all_data();
+                let art = self.music_files[self.idx].artist.clone().unwrap();
+                if self.artists.get(&art).is_some() {
+                    self.artists.get_mut(&art).unwrap().push(self.music_files[self.idx].clone());
+                } else {
+                    self.artists.insert(art, vec![self.music_files[self.idx].clone()]);
+                }
+            }
+            self.idx += 1
+        } else {
+            self.is_read = false;
+            self.idx = 0;
+        }
+    }
+    fn add_tag_for_music(&mut self, tag: String, mut music_file: MusicFile) {
+        music_file.get_music_all_data();
+        if let Some(v) = self.tags.get_mut(&tag) {
+            v.push(music_file);
+        } else {
+            self.tags.insert(tag, vec![music_file]);
+        }
+    }
 }
 
 struct Player {
@@ -459,8 +489,11 @@ impl Player {
         }
     }
     fn verification_file(f: &MusicFile) -> bool {
-        let file = std::fs::File::open(&f.music).unwrap();
-        rodio::Decoder::try_from(file).is_ok()
+        if let Ok(file) = std::fs::File::open(&f.music) {
+            rodio::Decoder::try_from(file).is_ok()
+        } else {
+            false
+        }
     }
     fn play_music(&mut self, p: &mut MusicFile, store: &mut MusicStore) -> Result<(), ()> {
         if !Self::verification_file(&p) {
@@ -509,26 +542,26 @@ impl Player {
         }
         Ok(())
     }
-    fn music_play_push(&mut self, pidx: i64, store: &mut MusicStore) -> Result<(), ()> {
-        match &self.play_list {
-            PlayList::AllMusic => {
-                let idx = store.find_music(self);
-                let ret = ((idx as i64 + pidx) % store.music_files.len() as i64) as usize;
-                self.play_music(&mut store.music_files[ret].clone(), store)
-            }
-            PlayList::Tags(t) => {
-                let music_files = &store.tags[t];
-                let idx = store.find_music(self);
-                let ret = ((idx as i64 + pidx) % music_files.len() as i64) as usize;
-                self.play_music(&mut music_files[ret].clone(), store)
-            }
-            PlayList::Artist(a) => {
-                let music_files = &store.artists[a];
-                let idx = store.find_music(self);
-                let ret = ((idx as i64 + pidx) % music_files.len() as i64) as usize;
-                self.play_music(&mut music_files[ret].clone(), store)
-            }
+    fn calc_next_idx(len: usize, pos: usize, pidx: i32) -> usize {
+        let mut ret = pos as i32 + pidx;
+        if ret < 0 {
+            ret = len as i32 + pidx;
+        } else {
+            ret = ret % len as i32
         }
+        if len == 0 {
+            ret = 0;
+        }
+        ret as usize
+    }
+    fn music_play_push(&mut self, pidx: i32, store: &mut MusicStore) -> Result<(), ()> {
+        let idx = store.find_music(self);
+        let mut f = match &self.play_list {
+            PlayList::AllMusic => store.music_files[Self::calc_next_idx(store.music_files.len(), idx, pidx)].clone(),
+            PlayList::Tags(t) => store.tags[t][Self::calc_next_idx(store.tags[t].len(), idx, pidx)].clone(),
+            PlayList::Artist(a) => store.artists[a][Self::calc_next_idx(store.artists[a].len(), idx, pidx)].clone()
+        };
+        self.play_music(&mut f, store)
     }
     fn player_default(&mut self) {
         self.now_playing = None;
@@ -545,7 +578,60 @@ impl Player {
         let _ = self.music_player.try_seek(pos);
         self.value = pos.as_millis() as f64
     }
+    fn sync(&mut self, store: &mut MusicStore) -> Result<(), ()> {
+        self.value = self.music_player.get_pos().as_millis() as f64;
+        if self.music_player.empty() {
+            if let Some(p) = &self.now_playing {
+                match self.playback_type {
+                    PlaybackType::OnceStop => {
+                        self.play_state = PlayState::Stop;
+                    }
+                    PlaybackType::OneWhile => {
+                        self.play_music(&mut p.clone(), store)?;
+                        self.play_state = PlayState::Play;
+                        self.music_player.play();
+                    }
+                    PlaybackType::MusicNext => {
+                        self.music_play_push(1, store)?;
+                    }
+                    PlaybackType::RadomPlay => match &self.play_list {
+                        PlayList::AllMusic => {
+                            let idx = rand::random_range(0..store.music_files.len());
+                            self.play_music(&mut store.music_files[idx].clone(), store)?;
 
+                        }
+                        PlayList::Tags(t) => {
+                            let music_files = &store.tags[t];
+                            let idx = rand::random_range(0..music_files.len());
+                            self.play_music(&mut music_files[idx].clone(), store)?;
+                        }
+                        PlayList::Artist(a) => {
+                            let music_files = &store.artists[a];
+                            let idx = rand::random_range(0..music_files.len());
+                            self.play_music(&mut music_files[idx].clone(), store)?;
+                        }
+                    },
+                }
+            }
+            self.value = 0.0;
+            self.music_player.try_seek(Duration::from_secs(0)).unwrap();
+        }
+        Ok(())
+    }
+    fn ps_switch(&mut self) -> bool {
+        match self.play_state {
+            PlayState::Play => {
+                self.music_player.pause();
+                self.play_state = PlayState::Stop;
+                true
+            }
+            PlayState::Stop => {
+                self.music_player.play();
+                self.play_state = PlayState::Play;
+                false
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -620,7 +706,6 @@ struct RIMusic {
     settings: Settings,
     exit: bool,
     idx: usize,
-    read_f: bool
 }
 
 impl Default for RIMusic {
@@ -644,8 +729,7 @@ impl Default for RIMusic {
             show_exp_search_origin: false,
             settings,
             exit: false,
-            idx: 0,
-            read_f: true
+            idx: 0
         }
     }
 }
@@ -1198,51 +1282,8 @@ impl RIMusic {
                 }
             }
             Message::Sync => {
-                self.player.value = self.player.music_player.get_pos().as_millis() as f64;
-                if self.player.music_player.empty() {
-                    if let Some(p) = &self.player.now_playing {
-                        match self.player.playback_type {
-                            PlaybackType::OnceStop => {
-                                self.player.play_state = PlayState::Stop;
-                            }
-                            PlaybackType::OneWhile => {
-                                if let Err(_) = self.player.play_music(&mut p.clone(), &mut self.store) {
-                                    self.show_music_open_failure = true
-                                }
-                                self.player.play_state = PlayState::Play;
-                                self.player.music_player.play();
-                            }
-                            PlaybackType::MusicNext => {
-                                if let Err(_) = self.player.music_play_push(1, &mut self.store) {
-                                    self.show_music_open_failure = true
-                                }
-                            }
-                            PlaybackType::RadomPlay => match &self.player.play_list {
-                                PlayList::AllMusic => {
-                                    let idx = rand::random_range(0..self.store.music_files.len());
-                                    if let Err(_) = self.player.play_music(&mut self.store.music_files[idx].clone(), &mut self.store) {
-                                        self.show_music_open_failure = true
-                                    }
-                                }
-                                PlayList::Tags(t) => {
-                                    let music_files = &self.store.tags[t];
-                                    let idx = rand::random_range(0..music_files.len());
-                                    if let Err(_) = self.player.play_music(&mut music_files[idx].clone(), &mut self.store) {
-                                        self.show_music_open_failure = true
-                                    }
-                                }
-                                PlayList::Artist(a) => {
-                                    let music_files = &self.store.artists[a];
-                                    let idx = rand::random_range(0..music_files.len());
-                                    if let Err(_) = self.player.play_music(&mut music_files[idx].clone(), &mut self.store) {
-                                        self.show_music_open_failure = true
-                                    }
-                                }
-                            },
-                        }
-                    }
-                    self.player.value = 0.0;
-                    self.player.music_player.try_seek(Duration::from_secs(0)).unwrap();
+                if let Err(_) = self.player.sync(&mut self.store) {
+                    self.show_music_open_failure = true;
                 }
             }
             Message::OnReleaseSlider => {
@@ -1251,18 +1292,7 @@ impl RIMusic {
                     self.player.play_state = PlayState::Play;
                 }
             }
-            Message::OnPSSwitchClicked => match self.player.play_state {
-                PlayState::Play => {
-                    self.player.music_player.pause();
-                    self.player.play_state = PlayState::Stop;
-                    self.force_stop = true;
-                }
-                PlayState::Stop => {
-                    self.player.music_player.play();
-                    self.player.play_state = PlayState::Play;
-                    self.force_stop = false;
-                }
-            },
+            Message::OnPSSwitchClicked => self.force_stop = self.player.ps_switch(),
             Message::CloseMusicOpenFailureMsg => self.show_music_open_failure = false,
             Message::OnPlaybackTypeChanged(p) => self.player.playback_type = p,
             Message::SwitchSideBarShow => self.side_bar_show = !self.side_bar_show,
@@ -1275,11 +1305,7 @@ impl RIMusic {
                 self.operate_files = Some(p)
             }
             Message::AddTagTo(t, p) => {
-                if let Some(v) = self.store.tags.get_mut(&t) {
-                    v.push(p);
-                } else {
-                    self.store.tags.insert(t, vec![p]);
-                }
+                self.store.add_tag_for_music(t, p);
                 self.show_set_tag_modal = false;
             }
             Message::CloseSetTag => self.show_set_tag_modal = false,
@@ -1324,10 +1350,17 @@ impl RIMusic {
                 }
             }
             Message::DeleteOriginPath(p) => {
+                if let Some(val) = &self.player.now_playing {
+                    if let Some(par) = val.music.parent() {
+                        if par == p.as_path() {
+                            self.player.player_default();
+                        }
+                    }
+                }
                 self.store.remove_search_origin(p);
                 self.store.sync();
                 self.idx = 0;
-                self.read_f = true
+                self.store.is_read = true
             }
             Message::OnAddSearchOriginClicked => {
                 let path = rfd::FileDialog::new().pick_folder();
@@ -1338,7 +1371,7 @@ impl RIMusic {
                     self.store.sync_only_push();
                     }
                     self.idx = 0;
-                    self.read_f = true
+                    self.store.is_read = true
                 }
             }
             Message::CloseSave => {
@@ -1347,21 +1380,7 @@ impl RIMusic {
                 self.exit = true
             }
             Message::ReadFileData => {
-                if self.idx < self.store.music_files.len() {
-                    println!("{}-{:?}", self.store.music_files.len(), self.store.music_files[self.idx].music);
-                    if Player::verification_file(&self.store.music_files[self.idx]) {
-                        self.store.music_files[self.idx].get_music_all_data();
-                        let art = self.store.music_files[self.idx].artist.clone().unwrap();
-                        if self.store.artists.get(&art).is_some() {
-                            self.store.artists.get_mut(&art).unwrap().push(self.store.music_files[self.idx].clone());
-                        } else {
-                            self.store.artists.insert(art, vec![self.store.music_files[self.idx].clone()]);
-                        }
-                    }
-                    self.idx += 1
-                } else {
-                    self.read_f = false
-                }
+                self.store.read_one();
             }
         }
         if self.exit {
@@ -1375,7 +1394,7 @@ impl RIMusic {
             (self.player.play_state == PlayState::Play)
                 .then(|| iced::time::every(Duration::from_millis(50)).map(|_| Message::Sync))
                 .unwrap_or_else(|| iced::Subscription::none()),
-            (self.read_f)
+            self.store.is_read
                 .then(|| iced::time::every(Duration::from_millis(100)).map(|_| Message::ReadFileData))
                 .unwrap_or_else(|| iced::Subscription::none())
 
