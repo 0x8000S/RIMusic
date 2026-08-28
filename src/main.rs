@@ -23,14 +23,14 @@ fn cap() -> Palette {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 enum PlayList {
     AllMusic,
     Tags(String),
     Artist(String)
 }
 
-#[derive(Clone, Serialize, Deserialize, Copy)]
+#[derive(Clone, Serialize, Deserialize, Copy, Debug)]
 enum PlaybackType {
     OnceStop,
     OneWhile,
@@ -95,7 +95,7 @@ enum View {
     ArtistView(String)
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 struct MusicFile {
     music: PathBuf,
     duration: Option<Duration>,
@@ -314,7 +314,7 @@ impl CommonWidget {
         ).width(iced::Fill).into()
     }
 }
-
+#[derive(Debug)]
 struct MusicStore {
     search_origin: Vec<PathBuf>,
     music_files: Vec<MusicFile>,
@@ -439,7 +439,11 @@ impl MusicStore {
                 self.music_files[self.idx].get_music_all_data();
                 let art = self.music_files[self.idx].artist.clone().unwrap();
                 if self.artists.get(&art).is_some() {
-                    self.artists.get_mut(&art).unwrap().push(self.music_files[self.idx].clone());
+                    if let Some(v) = self.artists.get(&art) {
+                        if !v.contains(&self.music_files[self.idx]) {
+                        self.artists.get_mut(&art).unwrap().push(self.music_files[self.idx].clone());
+                        }
+                    }
                 } else {
                     self.artists.insert(art, vec![self.music_files[self.idx].clone()]);
                 }
@@ -641,7 +645,7 @@ enum SettingKeys {
     Volume(Float),
     KeepPlayState(bool)
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct Settings {
     show_side_bar: bool,
     volume: Float,
@@ -651,7 +655,8 @@ struct Settings {
     last_position: Duration,
     last_playback: PlaybackType,
     last_playlist: PlayList,
-    keep_state: bool
+    keep_state: bool,
+    artist: HashMap<String, Vec<MusicFile>>
 }
 
 impl Default for Settings {
@@ -665,7 +670,8 @@ impl Default for Settings {
             last_position: Duration::from_secs(0),
             last_playback: PlaybackType::OnceStop,
             last_playlist: PlayList::AllMusic,
-            keep_state: false
+            keep_state: false,
+            artist: HashMap::new()
         }
     }
 }
@@ -686,6 +692,7 @@ impl Settings {
             last_position: player.music_player.get_pos(),
             last_playback: player.playback_type.clone(),
             last_playlist: player.play_list.clone(),
+            artist: store.artists.clone(),
             ..*self
         }
     }
@@ -706,19 +713,16 @@ struct RIMusic {
     store: MusicStore,
     settings: Settings,
     exit: bool,
-    idx: usize,
+    run_once: bool
 }
 
 impl Default for RIMusic {
     fn default() -> Self {
         let settings = confy::load("RIMusic", None).unwrap_or_else(|_|Settings::default());
-        let mut store = MusicStore::new();
-        let mut player = Player::new();
-        Self::init(&mut player, &mut store, &settings);
         RIMusic {
-            store,
+            store: MusicStore::new(),
             operate_files: None,
-            player,
+            player: Player::new(),
             force_stop: false,
             show_music_open_failure: false,
             side_bar_show: false,
@@ -730,7 +734,7 @@ impl Default for RIMusic {
             show_exp_search_origin: false,
             settings,
             exit: false,
-            idx: 0
+            run_once: true
         }
     }
 }
@@ -1231,26 +1235,29 @@ impl RIMusic {
         let secs = seconds as u64;
         format!("{}:{:02}", secs / 60, secs % 60)
     }
-    fn init(player: &mut Player, store: &mut MusicStore, settings: &Settings) {
-        store.search_origin = settings.search_origin.clone();
-        store.tags = settings.tags.clone();
-        store.sync();
-        player.set_volume(settings.volume);
-        if settings.keep_state {
-            player.total_music_time = settings.last_music.is_some()
+    fn read_var(&mut self) {
+        self.store.search_origin = self.settings.search_origin.clone();
+        self.store.tags = self.settings.tags.clone();
+        self.store.artists = self.settings.artist.clone();
+        self.store.sync_only_push();
+        self.player.set_volume(self.settings.volume);
+    }
+    fn read_play(&mut self) {
+        if self.settings.keep_state {
+            self.player.total_music_time = self.settings.last_music.is_some()
                 .then(|| {
-                    let lm = &mut settings.last_music.clone().unwrap();
+                    let lm = &mut self.settings.last_music.clone().unwrap();
                     lm.get_music_file_total_duration();
                     lm.duration.unwrap()
                 })
                 .unwrap_or_else(|| Duration::from_secs(0));
-            player.playback_type = settings.last_playback;
-            player.play_list = settings.last_playlist.clone();
-            if settings.last_music.is_some() {
-                let _ = player.play_music(&mut settings.last_music.clone().unwrap(), store);
-                player.music_player.pause();
-                player.set_pos(settings.last_position);
-                player.play_state = PlayState::Stop;
+            self.player.playback_type = self.settings.last_playback;
+            self.player.play_list = self.settings.last_playlist.clone();
+            if self.settings.last_music.is_some() {
+                let _ = self.player.play_music(&mut self.settings.last_music.clone().unwrap(), &mut self.store);
+                self.player.music_player.pause();
+                self.player.set_pos(self.settings.last_position);
+                self.player.play_state = PlayState::Stop;
             }
         }
     }
@@ -1259,6 +1266,11 @@ impl RIMusic {
 // 执行逻辑
 impl RIMusic {
     fn update(&mut self, msg: Message) -> iced::Task<Message> {
+        if self.run_once {
+            self.read_var();
+            self.read_play();
+            self.run_once = false;
+        }
         match msg {
             Message::OnValueChanged(x) => {
                 self.player.music_player.pause();
@@ -1360,7 +1372,7 @@ impl RIMusic {
                 }
                 self.store.remove_search_origin(p);
                 self.store.sync();
-                self.idx = 0;
+                self.store.idx = 0;
                 self.store.is_read = true
             }
             Message::OnAddSearchOriginClicked => {
@@ -1371,7 +1383,7 @@ impl RIMusic {
                     self.store.search_origin.push(pat);
                     self.store.sync_only_push();
                     }
-                    self.idx = 0;
+                    self.store.idx = 0;
                     self.store.is_read = true
                 }
             }
