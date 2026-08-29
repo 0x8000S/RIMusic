@@ -1,4 +1,5 @@
 #![windows_subsystem = "windows"]
+#![cfg(debug_assertions)]
 use iced::{widget, Color};
 use iced_aw::Menu;
 use lofty::prelude::*;
@@ -122,12 +123,10 @@ impl MusicFile {
         if let Some(val) = val.primary_tag() {
             if let Some(art) = val.artist() {
                 self.artist = Some(art.to_string());
-            } else {
-                self.artist = Some("群星".to_string());
+                return;
             }
-        } else {
-            self.artist = Some("群星".to_string());
         }
+        self.artist = Some("群星".to_string());
     }
     fn get_music_all_data(&mut self) {
         if self.artist.is_some() {
@@ -147,29 +146,34 @@ impl MusicFile {
         if self.artist.is_some() {
             return;
         }
-        if let Ok(tf) = lofty::probe::Probe::open(self.music.clone()).unwrap().read() {
-            self._set_value(tf)
-        } else {
-            self.artist = Some("群星".to_string());
+        if let Ok(tf) = lofty::probe::Probe::open(self.music.clone()) {
+            if let Ok(tf) = tf.read() {
+            self._set_value(tf);
+                return;
+            }
         }
+        self.artist = Some("群星".to_string());
     }
     fn get_music_file_total_duration(&mut self) {
         println!("Read time...");
         if let Some(_) = self.duration {
             return;
         }
-        if let Ok(tf) = lofty::probe::Probe::open(self.music.clone()).unwrap().read() {
-            self.duration = Some(tf.properties().duration());
-        } else {
-            let filez = std::fs::File::open(&self.music).unwrap();
+        if let Ok(tf) = lofty::probe::Probe::open(self.music.clone()) {
+            if let Ok(tf) = tf.read() {
+                self.duration = Some(tf.properties().duration());
+                return;
+            }
+        }
+        if let Ok(filez) = std::fs::File::open(&self.music) {
             if let Ok(source) = rodio::Decoder::new(std::io::BufReader::new(filez)) {
                 if let Some(d) = source.total_duration() {
                     self.duration = Some(d);
+                    return;
                 }
-            } else {
-                self.duration = Some(Duration::from_secs(0u64));
             }
         }
+        self.duration = Some(Duration::from_secs(0u64));
     }
 
 }
@@ -363,12 +367,13 @@ impl MusicStore {
         let mut files = vec![];
         if let Ok(val) = std::fs::read_dir(p) {
             for f in val {
-                let f = f.unwrap();
-                let path = f.path();
-                if path.is_file() {
-                    if let Some(val) = path.extension() {
-                        if val == "mp3" || val == "wav" || val == "ogg" {
-                            files.push(path)
+                if let Ok(f) = f {
+                    let path = f.path();
+                    if path.is_file() {
+                        if let Some(val) = path.extension() {
+                            if val == "mp3" || val == "wav" || val == "ogg" {
+                                files.push(path)
+                            }
                         }
                     }
                 }
@@ -504,7 +509,11 @@ impl Player {
         if !Self::verification_file(&p) {
             return Err(())
         }
-        let file = std::fs::File::open(&p.music).unwrap();
+        let file = std::fs::File::open(&p.music);
+        if let Err(_) = file {
+            return Err(())
+        }
+        let file = file.unwrap();
         self.now_playing = Some(p.clone());
         if let Ok(source) = rodio::Decoder::try_from(file) {
             self.play_state = PlayState::Play;
