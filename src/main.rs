@@ -1,5 +1,4 @@
 #![windows_subsystem = "windows"]
-#![cfg(debug_assertions)]
 use iced::{widget, Color};
 use iced_aw::Menu;
 use lofty::prelude::*;
@@ -142,7 +141,6 @@ impl MusicFile {
         }
     }
     fn get_music_file_artist(&mut self) {
-        println!("Read artist...");
         if self.artist.is_some() {
             return;
         }
@@ -155,7 +153,6 @@ impl MusicFile {
         self.artist = Some("群星".to_string());
     }
     fn get_music_file_total_duration(&mut self) {
-        println!("Read time...");
         if let Some(_) = self.duration {
             return;
         }
@@ -439,7 +436,6 @@ impl MusicStore {
     }
     fn read_one(&mut self) {
         if self.idx < self.music_files.len() {
-            println!("{}-{:?}", self.music_files.len(), self.music_files[self.idx].music);
             if Player::verification_file(&self.music_files[self.idx]) {
                 self.music_files[self.idx].get_music_all_data();
                 let art = self.music_files[self.idx].artist.clone().unwrap();
