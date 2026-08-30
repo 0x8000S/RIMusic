@@ -46,14 +46,14 @@ impl Default for Settings {
 }
 
 impl Settings {
-    pub(crate) fn set_setting(&mut self, key: SettingKeys) {
+    pub fn set_setting(&mut self, key: SettingKeys) {
         match key {
             SettingKeys::ShowSideBar(b) => self.show_side_bar = b,
             SettingKeys::Volume(v) => self.volume = v,
             SettingKeys::KeepPlayState(b) => self.keep_state = b
         }
     }
-    pub(crate) fn save(&self, store: &MusicStore, player: &Player) -> Self {
+    pub fn save(&self, store: &MusicStore, player: &Player) -> Self {
         Settings {
             search_origin: store.search_origin.clone(),
             tags: store.tags.clone(),

@@ -17,7 +17,7 @@ pub struct Player {
 }
 
 impl Player {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let handle = rodio::DeviceSinkBuilder::open_default_sink().unwrap();
         let player = rodio::Player::connect_new(&handle.mixer());
 
@@ -33,14 +33,14 @@ impl Player {
             value: 0f64,
         }
     }
-    pub(crate) fn verification_file(f: &MusicFile) -> bool {
+    pub fn verification_file(f: &MusicFile) -> bool {
         if let Ok(file) = std::fs::File::open(&f.music) {
             rodio::Decoder::try_from(file).is_ok()
         } else {
             false
         }
     }
-    pub(crate) fn play_music(&mut self, p: &mut MusicFile, store: &mut MusicStore) -> Result<(), ()> {
+    pub fn play_music(&mut self, p: &mut MusicFile, store: &mut MusicStore) -> Result<(), ()> {
         if !Self::verification_file(&p) {
             return Err(())
         }
@@ -103,7 +103,7 @@ impl Player {
         }
         ret as usize
     }
-    pub(crate) fn music_play_push(&mut self, pidx: i32, store: &mut MusicStore) -> Result<(), ()> {
+    pub fn music_play_push(&mut self, pidx: i32, store: &mut MusicStore) -> Result<(), ()> {
         let idx = store.find_music(self);
         let mut f = match &self.play_list {
             PlayList::AllMusic => store.music_files[Self::calc_next_idx(store.music_files.len(), idx, pidx)].clone(),
@@ -112,7 +112,7 @@ impl Player {
         };
         self.play_music(&mut f, store)
     }
-    pub(crate) fn player_default(&mut self) {
+    pub fn player_default(&mut self) {
         self.now_playing = None;
         self.music_player.stop();
         self.play_state = PlayState::Stop;
@@ -120,14 +120,14 @@ impl Player {
         self.music_player.try_seek(Duration::from_secs(0)).unwrap();
         self.music_name = String::from("TEST MUSIC TITLE");
     }
-    pub(crate) fn set_volume(&mut self, vol: Float) {
+    pub fn set_volume(&mut self, vol: Float) {
         self.music_player.set_volume(vol)
     }
     pub fn set_pos(&mut self, pos: Duration) {
         let _ = self.music_player.try_seek(pos);
         self.value = pos.as_millis() as f64
     }
-    pub(crate) fn sync(&mut self, store: &mut MusicStore) -> Result<(), ()> {
+    pub fn sync(&mut self, store: &mut MusicStore) -> Result<(), ()> {
         self.value = self.music_player.get_pos().as_millis() as f64;
         if self.music_player.empty() {
             if let Some(p) = &self.now_playing {
@@ -167,7 +167,7 @@ impl Player {
         }
         Ok(())
     }
-    pub(crate) fn ps_switch(&mut self) -> bool {
+    pub fn ps_switch(&mut self) -> bool {
         match self.play_state {
             PlayState::Play => {
                 self.music_player.pause();

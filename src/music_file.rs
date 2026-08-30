@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct MusicFile {
-    pub(crate) music: PathBuf,
-    pub(crate) duration: Option<Duration>,
-    pub(crate) artist: Option<String>
+    pub music: PathBuf,
+    pub duration: Option<Duration>,
+    pub artist: Option<String>
 }
 impl Default for MusicFile {
     fn default() -> Self {
@@ -37,7 +37,7 @@ impl MusicFile {
         }
         self.artist = Some("群星".to_string());
     }
-    pub(crate) fn get_music_all_data(&mut self) {
+    pub fn get_music_all_data(&mut self) {
         if self.artist.is_some() {
             return;
         }
@@ -50,7 +50,7 @@ impl MusicFile {
             self.artist = Some("群星".to_string());
         }
     }
-    pub(crate) fn get_music_file_artist(&mut self) {
+    pub fn get_music_file_artist(&mut self) {
         if self.artist.is_some() {
             return;
         }
@@ -62,7 +62,7 @@ impl MusicFile {
         }
         self.artist = Some("群星".to_string());
     }
-    pub(crate) fn get_music_file_total_duration(&mut self) {
+    pub fn get_music_file_total_duration(&mut self) {
         if let Some(_) = self.duration {
             return;
         }

@@ -8,10 +8,10 @@ use crate::store::MusicStore;
 use crate::backend;
 
 pub struct RIMusic {
-    pub(crate) player: Player,
-    pub(crate) store: MusicStore,
-    pub(crate) settings: Settings,
-    pub(crate) exit: bool,
+    pub player: Player,
+    pub store: MusicStore,
+    pub settings: Settings,
+    pub exit: bool,
     run_once: bool,
     pub ui: Ui
 }
@@ -32,7 +32,7 @@ impl Default for RIMusic {
 
 // UI逻辑
 impl RIMusic {
-    pub(crate) fn view(&self) -> iced::Element<'_, Message> {
+    pub fn view(&self) -> iced::Element<'_, Message> {
         self.ui.view(UiArgs {
             player: &self.player,
             store: &self.store,
@@ -75,7 +75,7 @@ impl RIMusic {
 
 // 执行逻辑
 impl RIMusic {
-    pub(crate) fn update(&mut self, msg: Message) -> iced::Task<Message> {
+    pub fn update(&mut self, msg: Message) -> iced::Task<Message> {
         if self.run_once {
             self.read_var();
             self.read_play();
@@ -90,7 +90,7 @@ impl RIMusic {
         }
         iced::Task::none()
     }
-    pub(crate) fn subscription(&self) -> iced::Subscription<Message> {
+    pub fn subscription(&self) -> iced::Subscription<Message> {
         iced::Subscription::batch([
             iced::window::close_requests().map(|_| Message::Backend(BackendMessage::CloseSave)),
             (self.player.play_state == PlayState::Play)

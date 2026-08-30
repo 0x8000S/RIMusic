@@ -153,7 +153,7 @@ impl CommonWidget {
 pub struct Ui {
     operate_files: Option<MusicFile>,
     force_stop: bool,
-    pub(crate) show_music_open_failure: bool,
+    pub show_music_open_failure: bool,
     side_bar_show: bool,
     view: View,
     show_set_tag_modal: bool,
@@ -203,7 +203,7 @@ impl Ui {
             .into()
     }
 
-    pub(crate) fn view<'a>(&'a self, args: UiArgs<'a>) -> iced::Element<'a, Message> {
+    pub fn view<'a>(&'a self, args: UiArgs<'a>) -> iced::Element<'a, Message> {
         widget::stack([
             self.content(args.clone()),
             Self::show_or_space(Ui::modal_music_open_fault(), self.show_music_open_failure),
